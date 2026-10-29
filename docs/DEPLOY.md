@@ -29,15 +29,19 @@ sudo -u bupt /opt/bupt-insight/venv/bin/pip install -r /opt/bupt-insight/app/req
 浏览器二选一：
 
 ```bash
-# A. Playwright 自带 Chromium（约 300MB）
-sudo -u bupt /opt/bupt-insight/venv/bin/playwright install chromium
+# A. Playwright 自带 Chromium（约 300MB，装到 /opt/bupt-insight/browsers）
+sudo mkdir -p /opt/bupt-insight/browsers
+sudo chown bupt:bupt /opt/bupt-insight/browsers
+sudo -u bupt env PLAYWRIGHT_BROWSERS_PATH=/opt/bupt-insight/browsers \
+  /opt/bupt-insight/venv/bin/playwright install chromium
 
 # B. 系统 Google Chrome（推荐在国内网络使用）
 wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 sudo apt install ./google-chrome-stable_current_amd64.deb
 ```
 
-用 B 时在 `config.yaml` 设置 `net.browser: chrome`，或直接写
+用 A 时 systemd 单元里的 `PLAYWRIGHT_BROWSERS_PATH` 必须与安装路径一致（示例已设为
+`/opt/bupt-insight/browsers`）。用 B 时在 `config.yaml` 设置 `net.browser: chrome`，或直接写
 `net.executable_path: /opt/google/chrome/chrome`。
 
 若 Playwright 下载 Chromium 失败（CDN 被拦截），见下方“常见问题”。
