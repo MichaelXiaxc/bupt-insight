@@ -29,9 +29,6 @@ def request(data):
         raise ValueError('model missing')
     key = os.environ.get('LLM_API_KEY')
     if not key and not is_local(base):
-        from core.security import get_secret
-        key = get_secret('llm_api_key')
-    if not key and not is_local(base):
         raise ValueError('key missing')
     schema = Analysis.model_json_schema()
     # OpenAI strict schema requires all properties, including nullable ones.

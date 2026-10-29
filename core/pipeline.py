@@ -1,33 +1,33 @@
-from core.config import resolve
+"""Collection pipeline: fetch BYR, persist versions, analyse, notify, back up."""
+
+from __future__ import annotations
+
+import logging
+
+from core.config import data_dir
 from core.database import Database
 from core.errors import safe_error
 from core.locking import single_run
 from core.notifications import dispatch, enabled
 from core.progress import update as progress
 
+log = logging.getLogger(__name__)
+
 
 def database_path(cfg):
-    # Keep old account history/outboxes separate when credentials are replaced.
-    import json
-    import re
-    from core.security import get_secret
-    saved = get_secret("portal")
-    scope = json.loads(saved).get("scope", "default") if saved else "default"
-    if scope != "default" and not re.fullmatch(r"[0-9a-f]{32}", scope):
-        from core.errors import InsightError
-        raise InsightError("credentials_invalid", "本地凭据作用域无效，请重新保存")
-    return resolve(cfg, cfg["paths"]["data_dir"]) / scope / "insight.sqlite3"
+    return data_dir(cfg) / "insight.sqlite3"
 
 
-def database(cfg):
+def database(cfg) -> Database:
     return Database(database_path(cfg))
 
 
-def sync(cfg, names=None, push=False, baseline=False, boards=None, fetchers=None):
+def sync(cfg, names=None, push=False, baseline=False, boards=None, fetchers=None) -> dict:
     from sources import get
-    names = names or [k for k in ("portal", "byr") if cfg["sources"][k].get("enabled")]
+
+    names = names or [name for name in ("byr",) if cfg["sources"][name].get("enabled")]
     report = {"sources": {}, "deliveries": []}
-    with single_run(resolve(cfg, cfg["paths"]["data_dir"]) / "run.lock"):
+    with single_run(data_dir(cfg) / "run.lock"):
         db = database(cfg)
         try:
             db.recover()
@@ -43,31 +43,41 @@ def sync(cfg, names=None, push=False, baseline=False, boards=None, fetchers=None
                         for item in items:
                             change = db.upsert(item, channels=enabled(cfg), baseline=baseline)
                             counts[change] += 1
-                    status = "partial_failed" if errors and sum(counts.values()) else (
-                        "failed" if errors else ("no_new" if not counts["new"] and not counts["changed"] else "ok"))
-                    if errors and not sum(counts.values()) and any("login_expired" in x for x in errors):
-                        status = "login_expired"
+                    if errors and sum(counts.values()):
+                        status = "partial_failed"
+                    elif errors:
+                        status = "login_expired" if any("login_expired" in str(x) for x in errors) else "failed"
+                    elif not counts["new"] and not counts["changed"]:
+                        status = "no_new"
+                    else:
+                        status = "ok"
                 except (Exception, SystemExit) as exc:
                     status, message = safe_error(exc)
                     errors.append(message)
+                    log.warning("source %s failed: %s", name, status)
                 db.finish_run(run, status, counts, errors)
                 report["sources"][name] = {"status": status, **counts, "errors": errors}
                 progress(cfg, name, "source_finished", status=status, **counts)
             if push and not baseline:
                 try:
                     from core.analysis import run_pending
-                    report['analysis'] = run_pending(cfg, db)
+
+                    report["analysis"] = run_pending(cfg, db)
                 except Exception:
-                    report['analysis'] = {'status': 'failed', 'message': '分析不可用，继续基础提醒'}
+                    log.exception("analysis failed")
+                    report["analysis"] = {"status": "failed", "message": "分析不可用，继续基础提醒"}
                 progress(cfg, "deliveries", "pushing")
                 report["deliveries"] = dispatch(cfg, db)
             try:
                 from core.backup import automatic
-                report['backup'] = automatic(database_path(cfg), cfg.get('backup', {}))
+
+                report["backup"] = automatic(database_path(cfg), cfg.get("backup", {}))
             except Exception:
-                report['backup'] = {'status': 'failed', 'message': '自动备份失败，原库保留；请检查空间和权限'}
+                log.exception("automatic backup failed")
+                report["backup"] = {"status": "failed", "message": "自动备份失败，原库保留；请检查空间和权限"}
             from core.health import inspect
-            report['health'] = inspect(cfg, db)
+
+            report["health"] = inspect(cfg, db)
             progress(cfg, "all", "completed")
         finally:
             db.close()

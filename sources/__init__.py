@@ -1,10 +1,8 @@
-"""信息源注册表。加新源 = 在这里加一行，其余代码不用动。"""
-from sources import byr, portal
+"""Source registry. Adding a source = one line here; the rest of the code is unchanged."""
 
-REGISTRY = {
-    "byr": byr,
-    "portal": portal,
-}
+from sources import byr
+
+REGISTRY = {"byr": byr}
 
 
 def get(name):
