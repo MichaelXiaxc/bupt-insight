@@ -1,0 +1,41 @@
+[Unit]
+Description=BUPT Insight reader (gunicorn)
+Documentation=https://github.com/LiJunhao09100910/bupt-insight
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bupt
+Group=bupt
+WorkingDirectory=/opt/bupt-insight/app
+Environment=TZ=Asia/Shanghai
+Environment=BUPT_INSIGHT_CONFIG=/opt/bupt-insight/app/config.yaml
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/bupt-insight/browsers
+# Set the master key outside the data directory if you prefer not to keep a key file:
+# EnvironmentFile=/etc/bupt-insight/env
+
+# One worker is intentional: the reader keeps a small in-process cache and a
+# single Reader instance. Threads cover a single-user workload.
+ExecStart=/opt/bupt-insight/venv/bin/gunicorn \
+    --bind 127.0.0.1:8000 \
+    --workers 1 --threads 8 --worker-class gthread \
+    --timeout 60 --graceful-timeout 30 \
+    --max-requests 5000 --max-requests-jitter 500 \
+    --access-logfile - --error-logfile - \
+    wsgi:app
+
+Restart=always
+RestartSec=5
+StartLimitBurst=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/bupt-insight
+MemoryMax=1G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

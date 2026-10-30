@@ -15,9 +15,10 @@ CLOSED = re.compile(r'已招满|招募结束|招聘结束|停止招募|停止招
 ONGOING = re.compile(r'尚未投稿|还未投稿|还没投稿|未投稿|投稿前|论文[^。\n]{0,12}还没投(?!递)|在研(?:项目|课题)?|已有.{0,12}(?:初稿|结果)|补(?:充)?实验|(?:项目|课题|论文).{0,8}(?:进行中|已启动|已开展)|(?:数据|任务定义|论文框架)[^。\n]{0,25}(?:已经具备|已完成|已准备)|正在推进[^。\n]{0,25}研究')
 AUTHORSHIP = re.compile(r'(?:提供|给予|可获|可以|支持|安排|保证|承诺|共同|合作|按贡献|根据贡献|贡献决定)[^。\n]{0,35}(?:二作|三作|第二作者|第三作者|共同作者|联合作者|署名)|(?:二作|三作|第二作者|第三作者|共同作者|联合作者|署名)[^。\n]{0,30}(?:机会|名额|贡献|协商|商议|分配|可谈)|(?:二作|三作|第二作者|第三作者)(?:[、，/或和及\s]*(?:二作|三作|第二作者|第三作者))*[：:]')
 BENEFIT_AUTHORSHIP = re.compile(r'(?:加入你将获得|你将获得|实习生收益|实习收获)[^\n]*(?:\n[^\n]*){0,3}?(?:一作|第一作者|署名)[^\n]*')
+EXPLICIT_MENTOR = re.compile(r'(?:合作导师|指导老师|指导教师|课题组负责人|导师)\s*[：:]\s*[^\n]{1,80}')
 MENTOR = re.compile(r'(?:导师|老师|教授|课题组|实验室)[^。\n]{0,30}(?:招募|招收|招聘|招新)|(?:合作导师|指导老师)[：:][^\n]{1,80}')
 TIME_COMMITMENT = re.compile(r'立即开始|未来两周|两周内|每周[^。\n]{0,12}(?:天|小时)|至少[^。\n]{0,8}个月')
-DEADLINE = re.compile(r'(?:截止|截至)[^。\n]{0,16}?(?:(20\d{2})[-/年])?(\d{1,2})[-/月](\d{1,2})(?:日|号)?')
+DEADLINE = re.compile(r'(?:截止|截至)\s*[^。\n]{0,16}?(?:(20\d{2})\s*[-/年])?\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*(?:日|号)?')
 
 
 def quote(pattern, text):
@@ -62,7 +63,7 @@ def opportunity(item, current=None):
     excluded = quote(SEEKER, title) or closed or quote(NO_UNDERGRADUATE, text) or (graduate if not undergraduate else '')
     ongoing = quote(ONGOING, text) if candidate else ''
     authorship = (quote(AUTHORSHIP, text) or quote(BENEFIT_AUTHORSHIP, content)) if candidate else ''
-    mentor = quote(MENTOR, text) if candidate else ''
+    mentor = (quote(EXPLICIT_MENTOR, text) or quote(MENTOR, text)) if candidate else ''
     return {
         'candidate': candidate and not bool(excluded),
         'recruitment': recruitment,

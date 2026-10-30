@@ -1,0 +1,13 @@
+BUPT Insight (BYR-only fork)
+
+Copyright (c) 2026 bupt-information-collector contributors
+Copyright (c) 2026 BUPT Insight contributors
+
+This product is derived from:
+  yantingweb/bupt-information-collector (MIT)
+  LiJunhao09100910/bupt-insight (MIT)
+
+The original MIT license and copyright notices are retained in LICENSE.
+Modifications in this distribution are described in docs/UPSTREAM.md and
+CHANGELOG.md. Third-party Python packages are distributed under their own
+licenses; see requirements.txt and the installed package metadata.

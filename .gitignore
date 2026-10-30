@@ -1,33 +1,30 @@
-# 本地配置：里面填了推送 webhook，不进版本库
+# Local configuration: contains deployment paths and push endpoints.
 config.yaml
 
-# 登录会话快照 = 凭据，绝对不能进版本库
-.session/
+# Encrypted secrets, key material and session snapshots.
+secrets/
+.local/
+*.enc
+*.key
 *.state.json
 
-# 抓取产物与本地状态
+# Data, caches and logs.
 data/
 inbox/*.md
 !inbox/.gitkeep
+*.sqlite3
+*.sqlite3-*
+*.log
 
+# Python.
 __pycache__/
 *.pyc
 .venv/
+venv/
 .test-output/
 .pytest_cache/
-*.bin
-*.bin.tmp
-*.sqlite3*
-.env
-.local/
-profile.yaml
-profile.*.local.yaml
-*.log
 .coverage
 htmlcov/
-*.pid
-*.sqlite*
 
-# 实际联调证据仅保留本地；虚构样本评估可公开
+# Local evaluation evidence may contain private notices.
 docs/*.json
-!docs/phase2-evaluation.json

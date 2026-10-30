@@ -23,7 +23,7 @@ def folder(cfg, name):
     base=root(cfg).resolve()
     target=(base/name).resolve()
     if target.parent!=base or not target.is_dir():
-        raise InsightError('evaluation_invalid','只能使用当前账号下的评估批次名')
+        raise InsightError('evaluation_invalid','只能使用当前数据目录下的评估批次名')
     return target
 
 
@@ -32,10 +32,10 @@ def sha(raw):
 
 
 def freeze(cfg, db, profile, count=40):
-    # Source+board/column round robin, stable SHA order within strata.
+    # Board round robin, stable SHA order within each board.
     strata=defaultdict(list)
-    for row in db.db.execute("SELECT * FROM notices WHERE source IN ('portal','byr')"):
-        strata[(row['source'],row['origin'] if row['source']=='byr' else 'portal')].append(dict(row))
+    for row in db.db.execute("SELECT * FROM notices WHERE source='byr'"):
+        strata[(row['source'], row['origin'])].append(dict(row))
     for group in strata.values():group.sort(key=lambda r:sha(r['id'].encode()))
     selected=[]
     while strata and len(selected)<max(1,min(1000,count)):

@@ -1,0 +1,27 @@
+[Unit]
+Description=BUPT Insight collection scan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bupt
+Group=bupt
+WorkingDirectory=/opt/bupt-insight/app
+Environment=TZ=Asia/Shanghai
+Environment=BUPT_INSIGHT_CONFIG=/opt/bupt-insight/app/config.yaml
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/bupt-insight/browsers
+# EnvironmentFile=/etc/bupt-insight/env
+
+ExecStart=/opt/bupt-insight/venv/bin/python -X utf8 run.py scan --push
+
+TimeoutStartSec=45min
+Nice=10
+IOSchedulingClass=best-effort
+MemoryMax=2G
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/bupt-insight

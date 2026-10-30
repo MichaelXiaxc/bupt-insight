@@ -1,55 +1,68 @@
-"""浏览器会话管理。所有源共用一套逻辑，别每个源各写一遍。
+"""Playwright session management for BYR.
 
-BYR 继续使用官方浏览器人工登录与 storage_state。门户认证单独由 PortalAuthenticator 管理。
-会话复用不保证永久有效；验证码、权限变化和页面改版必须如实报告。
+The login snapshot is a credential: it is stored through ``core.secrets`` as
+AES-256-GCM ciphertext, never as a plain storage_state file. The login flow
+prefills the saved account when it can find the form, then waits for a real
+board page to load before accepting the session.
 """
+
+from __future__ import annotations
+
+import json
+import logging
 import os
 import pathlib
 import platform
 import shutil
+import sys
+import time
 
-from playwright.sync_api import sync_playwright
+from core.config import resolve
+from core.errors import InsightError
+from core.secrets import byr_state_store, load_byr_credentials
 
-BROWSER_ARGS = []  # 不隐藏自动化标记，不绕过学校浏览器/访问策略。
+log = logging.getLogger(__name__)
 
-_WIN_EDGE = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"]
-_WIN_CHROME = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-               r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]
+BROWSER_ARGS: list[str] = []  # Do not hide automation markers or bypass school policy.
+
+_WIN_EDGE = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+_WIN_CHROME = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+]
 _MAC_EDGE = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
 _MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+_LINUX = ["/usr/bin/google-chrome", "/opt/google/chrome/chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"]
 
 
 def _known_paths(which: str):
-    """按平台给出常见安装位置，最后再问一遍 PATH。"""
+    """Common install locations per platform, then PATH."""
     sysname = platform.system()
     if which in ("edge", "msedge"):
-        fixed = _WIN_EDGE if sysname == "Windows" else \
-            ([_MAC_EDGE] if sysname == "Darwin" else [])
-        return fixed + [shutil.which("microsoft-edge"),
-                        shutil.which("microsoft-edge-stable")]
+        fixed = _WIN_EDGE if sysname == "Windows" else ([_MAC_EDGE] if sysname == "Darwin" else [])
+        return fixed + [shutil.which("microsoft-edge"), shutil.which("microsoft-edge-stable")]
     if which == "chrome":
-        fixed = _WIN_CHROME if sysname == "Windows" else \
-            ([_MAC_CHROME] if sysname == "Darwin" else [])
-        return fixed + [shutil.which("google-chrome"),
-                        shutil.which("google-chrome-stable")]
+        fixed = _WIN_CHROME if sysname == "Windows" else ([_MAC_CHROME] if sysname == "Darwin" else _LINUX)
+        return fixed + [shutil.which("google-chrome"), shutil.which("google-chrome-stable")]
+    if which == "chromium":
+        return _LINUX + [shutil.which("chromium"), shutil.which("chromium-browser")]
     return []
 
 
 def _pw_cache():
-    """playwright 下载浏览器内核的缓存目录（各平台不同）。"""
     if platform.system() == "Windows":
-        base = pathlib.Path(os.environ.get("LOCALAPPDATA")
-                            or (pathlib.Path.home() / "AppData" / "Local"))
+        base = pathlib.Path(os.environ.get("LOCALAPPDATA") or (pathlib.Path.home() / "AppData" / "Local"))
         return base / "ms-playwright"
     if platform.system() == "Darwin":
         return pathlib.Path.home() / "Library" / "Caches" / "ms-playwright"
     return pathlib.Path.home() / ".cache" / "ms-playwright"
 
 
-# 只认完整版 chromium。**别用 chromium_headless_shell** ——
-# 装了 `playwright install chromium` 而没装 headless shell 时，headless 启动
-# 会去找 headless shell 并报「Executable doesn't exist」。显式指完整版最稳。
+# Only the full chromium build; the headless shell is a separate download and a
+# common source of "Executable doesn't exist" on servers.
 _PW_CHROMIUM = [
     "chromium-*/chrome-win64/chrome.exe",
     "chromium-*/chrome-win/chrome.exe",
@@ -63,20 +76,19 @@ _PW_CHROMIUM = [
 def playwright_chromium():
     base = _pw_cache()
     hits = []
-    for pat in _PW_CHROMIUM:
-        hits += list(base.glob(pat))
+    for pattern in _PW_CHROMIUM:
+        hits += list(base.glob(pattern))
     return str(sorted(hits)[-1]) if hits else None
 
 
 def browser_exe(cfg=None):
-    """实际要用的浏览器路径。优先本机真实 Edge/Chrome，最后退回 playwright 自带 chromium。"""
     net = ((cfg or {}).get("net") or {})
     if net.get("executable_path"):
         return net["executable_path"]
-    which = str(net.get("browser", "chromium")).lower()
-    for p in _known_paths(which):
-        if p and pathlib.Path(p).exists():
-            return p
+    which = str(net.get("browser", "chrome")).lower()
+    for path in _known_paths(which):
+        if path and pathlib.Path(path).exists():
+            return path
     return playwright_chromium()
 
 
@@ -84,68 +96,52 @@ _CHANNEL = {"edge": "msedge", "chrome": "chrome"}
 
 
 def launch(pw, cfg=None, headless=True):
-    """无头时别用 executable_path 硬指 —— 那样 Edge/Chrome 会跑成老式 headless，
-    UA 里带 `HeadlessChrome`，前端检测一眼就看出来。
-    走 channel 才是新版无头模式，UA 和平时一样。"""
     net = ((cfg or {}).get("net") or {})
-    which = str(net.get("browser", "chromium")).lower()
+    args = list(net.get("args") or [])
+    which = str(net.get("browser", "chrome")).lower()
     if not net.get("executable_path") and which in _CHANNEL:
         try:
-            return pw.chromium.launch(headless=headless, channel=_CHANNEL[which],
-                                      args=BROWSER_ARGS)
+            return pw.chromium.launch(headless=headless, channel=_CHANNEL[which], args=args)
         except Exception:
-            pass  # 没装那个浏览器就退回自带 chromium，别让整条链路挂掉
-    return pw.chromium.launch(headless=headless, executable_path=browser_exe(cfg),
-                              args=BROWSER_ARGS)
+            pass  # Fall back to the bundled build rather than breaking the pipeline.
+    executable = browser_exe(cfg)
+    if executable:
+        return pw.chromium.launch(headless=headless, executable_path=executable, args=args)
+    return pw.chromium.launch(headless=headless, args=args)
 
 
 def harden(ctx):
-    """保留原接口；不再修改浏览器指纹。"""
+    """Keep the original interface; browser fingerprinting is not modified."""
     return ctx
 
 
 class Session:
-    """包住 playwright 生命周期，业务代码只管拿 page。"""
+    """Wraps the Playwright lifecycle; business code only asks for a page."""
 
-    def __init__(self, cfg, source_key: str):
-        src = cfg["sources"][source_key]
+    def __init__(self, cfg, source_key: str = "byr"):
         self.cfg = cfg
         self.key = source_key
-        self.state_path = _resolve_session(cfg, src["session"])
-        if source_key == "byr" and self.state_path.suffix == ".json":
-            encrypted = self.state_path.with_suffix(".bin")
-            if encrypted.exists():
-                self.state_path = encrypted
-        if source_key == "byr" and not self.state_path.exists():
-            legacy = self.state_path.with_suffix(".json")
-            if legacy.exists():
-                self.state_path = legacy
-        self.base = src.get("base") or next(
-            (l["url"] for l in src.get("lists", [])), None)
-        # 公开的公告页不需要登录。默认 true，只有明确标 false 的源允许匿名抓
-        self.requires_login = src.get("requires_login", True)
+        self.store = byr_state_store(cfg)
+        self.base = cfg["sources"][source_key].get("base")
+        self.requires_login = cfg["sources"][source_key].get("requires_login", True)
         self.timeout = cfg["net"]["timeout_ms"]
         self._pw = None
         self._browser = None
         self.ctx = None
 
     def __enter__(self):
-        from core.security import read_state
-        from core.errors import InsightError
-        has_state = self.state_path.exists()
-        self.logged_in = has_state
-        if not has_state:
-            if self.requires_login:
-                raise InsightError("login_expired",
-                    f"[{self.state_path.name}] 没有会话快照。"
-                    f"先跑：python run.py login {self.key}")
-            print(f"  （{self.key} 无会话，按公开页匿名抓取）")
+        from playwright.sync_api import sync_playwright
 
+        has_state = self.store.exists()
+        self.logged_in = has_state
+        if not has_state and self.requires_login:
+            raise InsightError("login_expired", "没有会话快照。先运行：python -X utf8 run.py login byr")
         try:
             self._pw = sync_playwright().start()
             self._browser = launch(self._pw, self.cfg, headless=True)
-            state = read_state(self.state_path, allow_legacy=self.key == "byr") if has_state else None
+            state = self.store.read() if has_state else None
             self.ctx = harden(self._browser.new_context(storage_state=state))
+            self.ctx.set_default_timeout(self.timeout)
         except Exception:
             self.__exit__()
             raise
@@ -162,39 +158,124 @@ class Session:
     def new_page(self):
         return self.ctx.new_page()
 
-    def ensure_page(self, url=None):
-        """拿到一个「已经停在同源页面上」的 page。
-
-        page.evaluate 里发 fetch 是从当前页面的 origin 发出的。停在 about:blank
-        上时 origin 是 null，请求会被浏览器直接拒掉（TypeError: Failed to fetch），
-        看起来像接口挂了，其实是没导航。
-        """
-        p = self.ctx.pages[0] if self.ctx.pages else self.new_page()
-        if p.url in ("about:blank", "", None):
-            p.goto(url or self.base, wait_until="domcontentloaded", timeout=self.timeout)
-        return p
+    def save(self):
+        self.store.write(self.ctx.storage_state())
 
     def cookie(self, *names):
-        """按名字取 cookie。判登录态优先用这个 —— 不依赖页面，不受 HttpOnly 和
-        document.cookie 访问限制影响，也不需要先起一个 page。"""
         want = {n.lower() for n in names}
-        for c in self.ctx.cookies():
-            if c["name"].lower() in want and c["value"] not in ("", "guest"):
-                return c["value"]
+        for cookie in self.ctx.cookies():
+            if cookie["name"].lower() in want and cookie["value"] not in ("", "guest"):
+                return cookie["value"]
         return None
 
 
-def _resolve_session(cfg, filename: str) -> pathlib.Path:
-    from core.config import resolve
-    return resolve(cfg, f"{cfg['paths']['session_dir']}/{filename}")
+def byr_probe(page):
+    """Login marker: a real nforum user cookie, not just any random cookie."""
+    for cookie in page.context.cookies():
+        if cookie["name"] in ("nforum[UTMPUSERID]", "login-user") and cookie["value"] not in ("", "guest"):
+            return "logged-in-marker"
+    return None
+
+
+def byr_verify(page, board="Paper"):
+    page.goto(f"https://bbs.byr.cn/board/{board}", wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_selector("table.board-list tr", timeout=20000)
+    return page.locator("table.board-list tr").count() > 0
+
+
+def _fill_login(page, username, password) -> bool:
+    """Best-effort prefill of the official form; never log the values."""
+    try:
+        user = page.locator('input[name="id"], #id, input[name="username"]').first
+        pwd = page.locator('input[name="passwd"], input[name="pwd"], #pwd, input[name="password"]').first
+        if not (user.count() and pwd.count() and user.is_visible()):
+            return False
+        user.fill(username)
+        pwd.fill(password)
+        # Scope the submit button to the same form: the page header also has a
+        # "登录" control that would otherwise be matched first.
+        form = pwd.locator("xpath=ancestor::form[1]")
+        submit = form.locator('input[type="submit"], button[type="submit"], button:has-text("登录")').first
+        if submit.count():
+            submit.click()
+        else:
+            pwd.press("Enter")
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def login(cfg, start_url=None, wait_seconds: int = 300) -> bool:
+    """Open a real browser, authenticate (prefilled when possible), save a session."""
+    from playwright.sync_api import sync_playwright
+
+    source = cfg["sources"]["byr"]
+    start_url = start_url or source.get("base") or "https://bbs.byr.cn/index"
+    store = byr_state_store(cfg)
+    try:
+        credentials = load_byr_credentials(cfg)
+    except InsightError:
+        credentials = None
+
+    with sync_playwright() as pw:
+        browser = launch(pw, cfg, headless=False)
+        ctx = harden(browser.new_context())
+        page = ctx.new_page()
+        page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
+
+        if credentials and _fill_login(page, credentials["username"], credentials["password"]):
+            print("已用加密保存的账号提交登录表单。若出现验证码/二次验证，请在浏览器中完成。")
+        else:
+            print("请在浏览器窗口中完成 BYR 登录。")
+
+        print(f"最多等待 {wait_seconds} 秒；登录标记与凭据不会输出到日志。")
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                current = byr_probe(page)
+            except Exception:
+                continue
+            # A real nforum user cookie is definitive; the login may already have
+            # completed before the first poll, so do not wait for a state change.
+            if current:
+                try:
+                    verified = byr_verify(page)
+                except Exception:
+                    verified = False
+                if not verified:
+                    print("  检测到登录标记，但版面自检未通过，继续等待…")
+                    continue
+                store.write(ctx.storage_state())
+                print("登录已通过版面验证，会话已加密保存。")
+                ctx.close()
+                browser.close()
+                return True
+
+        print("等待超时，未保存会话。重新运行 login byr 即可。")
+        ctx.close()
+        browser.close()
+        return False
+
+
+def import_state(cfg, file) -> None:
+    """Import a plain Playwright storage_state JSON and encrypt it."""
+    path = pathlib.Path(file)
+    if not path.exists():
+        raise InsightError("configuration_error", f"找不到 {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise InsightError("configuration_error", "会话文件不是合法的 storage_state JSON") from None
+    if not isinstance(value, dict) or "cookies" not in value:
+        raise InsightError("configuration_error", "会话文件缺少 cookies 字段")
+    byr_state_store(cfg).write(value)
+    print(f"已加密导入 {path.name}；建议删除原始明文文件：{path}")
 
 
 def token_probe():
-    """通用登录探测器。
-
-    不猜选择器（SPA 站点没有用户名这种稳定节点），而是在 localStorage 和
-    cookie 里找 token / JWT / 用户 id 的痕迹。找到就返回指纹，没找到返回 None。
-    """
+    """Generic login detector kept for sources that have no stable DOM marker."""
     js = """() => {
       const parts = [];
       try {
@@ -211,71 +292,3 @@ def token_probe():
       return parts.length ? parts.sort().join('|') : null;
     }"""
     return lambda p: p.evaluate(js)
-
-
-def login(source_key: str, start_url: str, wait_seconds: int = 300, probe=None,
-          verify=None):
-    """开一个真实浏览器让他登录，登完存 storage_state。
-
-    probe:  可选 callable(page) -> str|None，判断「登上了没」。
-    verify: 可选 callable(page) -> bool。存完快照再验一次，确认没被踢回登录页。
-            有些站点未登录也会下发一串随机 cookie（看着像 token），probe 一兴奋
-            就报「登录成功」，结果带快照打开又被踢回去 —— 所以要 verify。
-
-    超时也不空手而归：先把当前 storage_state 存下来。探测器没命中不代表没登上，
-    存下来至少能拿 `scan` 验证一次，不用让人再登一遍。
-    """
-    import time
-
-    from core.config import load_config, resolve
-
-    cfg = load_config()
-    dst = resolve(cfg, f"{cfg['paths']['session_dir']}/"
-                       f"{cfg['sources'][source_key]['session']}")
-    if dst.suffix == ".json":
-        dst = dst.with_suffix(".bin")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-
-    with sync_playwright() as p:
-        b = launch(p, cfg, headless=False)
-        ctx = harden(b.new_context())
-        page = ctx.new_page()
-        page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
-
-        before = probe(page) if probe else None
-        print(f"\n浏览器已打开 {start_url}")
-        print("请在窗口里登录。登录标记不会输出到日志。")
-        print(f"最多等 {wait_seconds} 秒，登录后脚本会自动接管。\n")
-
-        deadline = time.time() + wait_seconds
-        while time.time() < deadline:
-            time.sleep(3)
-            try:
-                now = probe(page) if probe else None
-            except Exception:
-                continue
-            if now and now != before:
-                if verify and not _safe(verify, page):
-                    print("  状态变了但自检没过（还被踢回登录页），继续等你操作…")
-                    continue
-                from core.security import write_state
-                write_state(dst, ctx.storage_state())
-                print("登录通过业务页面验证，会话已加密保存")
-                print(f"会话已存到 {dst}  （别让它进 git）")
-                ctx.close()
-                b.close()
-                return True
-
-        print("等待超时，会话没保存。再跑一次这个命令即可。")
-        ctx.close()
-        b.close()
-        return False
-
-
-def _safe(fn, *a):
-    """verify 里 goto 失败不该把整个登录流程打断。"""
-    try:
-        return fn(*a)
-    except Exception as e:
-        print(f"  （自检异常 {type(e).__name__}，当作没过）")
-        return False

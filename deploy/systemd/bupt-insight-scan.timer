@@ -1,0 +1,14 @@
+[Unit]
+Description=Run BUPT Insight collection three times a day
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+OnCalendar=*-*-* 12:30:00
+OnCalendar=*-*-* 19:00:00
+Persistent=true
+RandomizedDelaySec=5min
+AccuracySec=1min
+Unit=bupt-insight-scan.service
+
+[Install]
+WantedBy=timers.target

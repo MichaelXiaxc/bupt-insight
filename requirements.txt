@@ -1,4 +1,4 @@
-# Windows 11, Python 3.11+
+# Runtime dependencies (Linux server; Python 3.11+)
 PyYAML>=6.0,<7
 playwright>=1.40,<2
 requests>=2.32,<3
@@ -6,5 +6,5 @@ beautifulsoup4>=4.12,<5
 pydantic>=2.10,<3
 Flask>=3.1,<4
 waitress>=3,<4
-keyring>=25,<26
-pywin32>=308; sys_platform == "win32"
+gunicorn>=23,<24
+cryptography>=42,<47

@@ -1,68 +1,72 @@
-import pytest
+import json
+import sys
 
-from core.cli import main
-from core.locking import single_run
-from core.pipeline import database
-from core.notifications import dispatch, Result
+import yaml
 
-
-def test_credentials_mutation_refused_during_sync(cfg, monkeypatch, capsys):
-    monkeypatch.setattr("core.cli.load_config", lambda: cfg)
-    from pathlib import Path
-    with single_run(Path(cfg["paths"]["data_dir"]) / "run.lock"):
-        assert main(["credentials", "save"]) == 1
-    assert "already_running" in capsys.readouterr().out
+from core import cli
 
 
-def test_test_push_does_not_send_existing_private_outbox(cfg, notice, monkeypatch, capsys):
-    monkeypatch.setattr("core.cli.load_config", lambda: cfg)
-    monkeypatch.setattr("core.security.get_secret", lambda _: None)
-    db = database(cfg)
-    db.upsert(notice, ["desktop"])
-    db.close()
-    sent = []
-    def desktop(title, body, url):
-        sent.append(title)
-        return Result("submitted", "fictional-test")
-    monkeypatch.setattr("core.notifications.desktop", desktop)
-    assert main(["test-push", "desktop"]) == 0
-    assert sent == ["BUPT Insight 通知测试"]
-    db = database(cfg)
-    assert len(db.pending(["desktop"])) == 1
-    db.close()
+class TTY:
+    def isatty(self):
+        return True
 
 
-def test_disabled_desktop_leaves_notification_durable(cfg, notice, monkeypatch):
-    monkeypatch.setattr("core.security.get_secret", lambda _: None)
-    cfg["push"]["channels"]["desktop"]["enabled"] = False
-    db = database(cfg)
-    db.upsert(notice, ["desktop"])
-    results = dispatch(cfg, db, sender=lambda *a: pytest.fail("关闭的桌面渠道不应调用"))
-    assert results == [] and db.status()["notices"] == 1
-    db.close()
+def write_config(tmp_path):
+    value = {
+        "paths": {
+            "data_dir": str(tmp_path / "data"),
+            "session_dir": str(tmp_path / "sessions"),
+            "inbox_dir": str(tmp_path / "inbox"),
+            "secrets_dir": str(tmp_path / "secrets"),
+        },
+        "sources": {"byr": {"enabled": True, "boards": ["Paper"]}},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(value, allow_unicode=True), encoding="utf-8")
+    return path, value
 
 
-def test_status_remains_readable_while_sync_locked(cfg, monkeypatch, capsys):
-    from pathlib import Path
-    monkeypatch.setattr("core.cli.load_config", lambda: cfg)
-    monkeypatch.setattr("core.security.get_secret", lambda _: None)
-    with single_run(Path(cfg["paths"]["data_dir"]) / "run.lock"):
-        assert main(["status"]) == 0
-    assert '"notices"' in capsys.readouterr().out
+def test_version_command(capsys):
+    assert cli.main(["version"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["version"]
 
 
-@pytest.mark.parametrize("source", ["portal", "byr", "all"])
-def test_logout_clears_only_selected_local_sessions(cfg, monkeypatch, source):
-    from pathlib import Path
-    monkeypatch.setattr("core.cli.load_config", lambda: cfg)
-    folder = Path(cfg["paths"]["session_dir"])
-    folder.mkdir(parents=True)
-    portal = folder / "portal.bin"
-    byr = folder / "byr.bin"
-    legacy = folder / "byr.json"
-    for path in (portal, byr, legacy):
-        path.write_bytes(b"fictional-not-opened")
-    assert main(["logout", source]) == 0
-    assert portal.exists() == (source == "byr")
-    assert byr.exists() == (source == "portal")
-    assert legacy.exists() == (source == "portal")
+def test_credentials_save_stores_encrypted_and_reports_status(tmp_path, capsys, monkeypatch):
+    path, _ = write_config(tmp_path)
+    monkeypatch.setenv("BUPT_INSIGHT_CONFIG", str(path))
+    monkeypatch.setattr(sys, "stdin", TTY())
+    values = iter(["20230001", "top-secret"])
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": next(values))
+
+    assert cli.main(["credentials", "save"]) == 0
+    saved = json.loads(capsys.readouterr().out)
+    assert saved["configured"] is True
+    assert saved["username"] == "20230001"
+    assert "top-secret" not in json.dumps(saved)
+
+    encrypted = (tmp_path / "secrets" / "byr.enc").read_text(encoding="utf-8")
+    assert "top-secret" not in encrypted
+
+    assert cli.main(["credentials", "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["configured"] is True
+
+
+def test_credentials_clear(tmp_path, capsys, monkeypatch):
+    path, _ = write_config(tmp_path)
+    monkeypatch.setenv("BUPT_INSIGHT_CONFIG", str(path))
+    monkeypatch.setattr(sys, "stdin", TTY())
+    values = iter(["u", "p"])
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": next(values))
+    cli.main(["credentials", "save"])
+    capsys.readouterr()
+    assert cli.main(["credentials", "clear"]) == 0
+    assert not (tmp_path / "secrets" / "byr.enc").exists()
+
+
+def test_scan_rejects_unknown_source(tmp_path, capsys, monkeypatch):
+    path, _ = write_config(tmp_path)
+    monkeypatch.setenv("BUPT_INSIGHT_CONFIG", str(path))
+    assert cli.main(["scan", "portal"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "configuration_error"

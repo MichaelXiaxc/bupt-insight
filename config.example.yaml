@@ -1,65 +1,88 @@
-# 密码和推送密钥通过 credentials 命令写入 Windows Credential Manager。
+# BUPT Insight 配置模板（仅 BYR 论坛信息源）
+#
+# 复制为 config.yaml 后修改。密码不写在这里：运行
+#     python -X utf8 run.py credentials save
+# 会把账号密码加密保存到 paths.secrets_dir 下的密文文件。
+
 owner:
-  tz: Asia/Shanghai
+  tz: Asia/Shanghai            # 影响“今天/近30天”等判断，服务器请保持一致
+
+site:
+  title: BUPT Insight
+  # 对外访问地址，用于生成通知里的链接；HTTPS 时 cookie 自动带 Secure。
+  base_url: https://insight.example.com
+  # 允许的 Host 头（防 DNS rebinding）。填实际域名；127.0.0.1/localhost 始终允许。
+  allowed_hosts:
+    - insight.example.com
+  # 由 base_url 推断；明文 HTTP 本地调试时可显式设为 false
+  cookie_secure: null
+
+server:
+  host: 127.0.0.1             # 只监听本机，由 nginx 反代；不要改成 0.0.0.0
+  port: 8000
+
 net:
-  browser: edge
-  executable_path: ""
+  browser: chrome             # chrome / chromium / edge；也可用 executable_path 指定
+  executable_path: ""         # 例如 /opt/google/chrome/chrome
   timeout_ms: 30000
   retries: 2
-  delay_ms: 2500
+  delay_ms: 2500              # 请求间隔，别调太低
+  args: []                    # 额外 Chromium 参数，例如 ["--disable-dev-shm-usage"]
+
 paths:
-  session_dir: .local/sessions
+  # 生产建议放到仓库外的绝对路径，例如 /var/lib/bupt-insight
   data_dir: .local/data
+  session_dir: .local/sessions
   inbox_dir: .local/inbox
+  secrets_dir: .local/secrets # 0700；与 config.yaml 分离，且不在版本控制内
+
 sources:
-  portal:
-    enabled: true
-    base: http://my.bupt.edu.cn
-    auth_mode: browser   # browser / http / auto；实际账号认证均待验证
-    session: portal_state.bin
-    manual_wait_seconds: 180
-    identity_selector: ""   # 登录后账号身份区域，必须校准
-    identity_expected_text: "" # 可选的账号标记；不要填写密码
-    business_selector: ""   # 仅登录后可见的业务内容区域，必须校准
-    frame_selector: ""      # 如果通知在 iframe 中，填写其选择器
-    rows_per_list: 20
-    # 尚未获取账号下的真实列表，禁止填写虚构接口冒充可用适配器。
-    lists: []
   byr:
     enabled: true
     base: https://bbs.byr.cn
-    session: byr_state.bin
     requires_login: true
-    private: false # 若关注私人版面，请设 true，禁止向第三方发送正文与链接
+    private: false            # 若关注私人版面，设 true，禁止把正文发往第三方
     watchlist: watchlist.json
     boards: [Paper, ML_DM, Robot, SICE, ParttimeJob, MathModel, Innovation, ACM_ICPC, AcademicAffairs, SCS]
     rows_per_board: 10
     board_overrides:
       Paper: {pages: 3, rows_per_page: 30}
+    # 留空则使用 paths.secrets_dir 下的默认文件名
+    credentials_file: ""      # 默认 <secrets_dir>/byr.enc
+    session_file: ""          # 默认 <secrets_dir>/byr-state.enc
+    master_key_file: ""       # 默认 <secrets_dir>/master.key（也可用环境变量注入）
+
 push:
   retries: 3
   channels:
+    # 通用 Webhook：JSON POST {"title","body","url"}
+    webhook: {enabled: false, url: ""}
+    # ntfy：手机推送，可自建；topic 相当于频道口令
+    ntfy: {enabled: false, server: https://ntfy.sh, topic: "", token: ""}
+    # 微信通道（可选）
     pushplus: {enabled: false}
     serverchan: {enabled: false}
-    desktop: {enabled: true}
+
 backup:
   enabled: true
   interval_hours: 24
   keep: 7
+
 health:
   stale_hours: 24
+
 ai:
-  mode: "off" # off=不调用模型；mock=模拟规则；api=真实OpenAI兼容API
-  base_url: "" # 例如本人部署的 http://127.0.0.1:8000/v1；外部服务必须HTTPS
-  model: "" # 可由 LLM_MODEL 覆盖；base_url可由 LLM_BASE_URL覆盖
-  response_format: json_schema # 不支持schema的服务可显式改json_object，仍严格本地校验
+  mode: "off"                 # off=不调用模型；mock=模拟；api=OpenAI 兼容接口
+  base_url: ""
+  model: ""
+  response_format: json_schema
   timeout_seconds: 8
   retries: 1
-  budget_seconds: 12 # 每轮分析总时间上限，超时保留基础提醒
-  max_per_run: 20 # API模式仍受总时间预算限制，剩余通知使用基础提醒
+  budget_seconds: 12
+  max_per_run: 20
   max_input_chars: 6000
-  allow_private_cloud: false # 单独授权发送门户标题、截断正文、来源和发布日期
-  allow_profile_cloud: false # 独立授权发送结构化画像；默认仅本地匹配
-  # profile_path为空时按当前账号作用域存储。禁止指向示例资料。
+  allow_private_cloud: false
+  allow_profile_cloud: false
+
 smart:
-  enabled: false # 开启后AI关闭时使用本地规则；重要事项即时，普通按本轮汇总
+  enabled: false              # 开启后用本地规则/AI 决定即时提醒或汇总
