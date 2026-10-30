@@ -192,10 +192,15 @@ def _fill_login(page, username, password) -> bool:
             return False
         user.fill(username)
         pwd.fill(password)
-        submit = page.locator('input[type="submit"], button[type="submit"], button:has-text("登录")').first
+        # Scope the submit button to the same form: the page header also has a
+        # "登录" control that would otherwise be matched first.
+        form = pwd.locator("xpath=ancestor::form[1]")
+        submit = form.locator('input[type="submit"], button[type="submit"], button:has-text("登录")').first
         if submit.count():
             submit.click()
-            return True
+        else:
+            pwd.press("Enter")
+        return True
     except Exception:
         return False
     return False
