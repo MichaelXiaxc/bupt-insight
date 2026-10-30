@@ -187,7 +187,7 @@ def _fill_login(page, username, password) -> bool:
     """Best-effort prefill of the official form; never log the values."""
     try:
         user = page.locator('input[name="id"], #id, input[name="username"]').first
-        pwd = page.locator('input[name="pwd"], #pwd, input[name="password"]').first
+        pwd = page.locator('input[name="passwd"], input[name="pwd"], #pwd, input[name="password"]').first
         if not (user.count() and pwd.count() and user.is_visible()):
             return False
         user.fill(username)
