@@ -202,6 +202,17 @@ def main(argv=None):
                 output({"status": "valid", "fingerprint": value.fingerprint(), "empty": value == profile.Profile()})
             return 0
 
+        # `sync` owns the writer lock itself; taking it here as well would fail
+        # with already_running because flock conflicts even inside one process.
+        if args.cmd == "scan":
+            if any(source != "byr" for source in args.sources):
+                raise InsightError("configuration_error", "信息源只有 byr")
+            report = sync(cfg, args.sources or None, args.push, args.baseline, args.boards)
+            output(report)
+            failed = any(s["status"] not in ("ok", "no_new") for s in report["sources"].values())
+            deliveries = any(d["status"] in ("failed", "unknown") for d in report["deliveries"])
+            return int(failed or deliveries or report.get("backup", {}).get("status") == "failed")
+
         readonly = args.cmd in ("status", "history", "health", "recommend") or (
             args.cmd == "delivery" and args.action == "list"
         ) or (args.cmd == "ai" and args.action == "show") or (args.cmd == "feedback" and args.action == "list")
@@ -213,15 +224,6 @@ def main(argv=None):
         with guard:
             db = database(cfg)
             try:
-                if args.cmd == "scan":
-                    if any(source != "byr" for source in args.sources):
-                        raise InsightError("configuration_error", "信息源只有 byr")
-                    report = sync(cfg, args.sources or None, args.push, args.baseline, args.boards)
-                    output(report)
-                    failed = any(s["status"] not in ("ok", "no_new") for s in report["sources"].values())
-                    deliveries = any(d["status"] in ("failed", "unknown") for d in report["deliveries"])
-                    return int(failed or deliveries or report.get("backup", {}).get("status") == "failed")
-
                 if args.cmd == "push":
                     from core.analysis import run_pending
                     from core.notifications import dispatch
