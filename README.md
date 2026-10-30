@@ -31,13 +31,110 @@ python -X utf8 run.py scan --baseline  # 建立基线，不推送历史
 python -X utf8 run.py web              # http://127.0.0.1:8000
 ```
 
-`login byr` 需要图形界面。服务器上可用 `xvfb-run` + VNC 登录一次，或从已登录的机器导出
-Playwright `storage_state` JSON 后执行：
+`login byr` 需要图形界面。无头服务器的登录方式、账号保存与登录自检的完整步骤见
+[配置账号与登录](#配置账号与登录)。
+
+## 配置账号与登录
+
+部署后需要两步：**保存账号**（加密落盘）和**登录一次**（保存会话）。两步都必须由运行
+`scan` 的同一个系统用户执行，否则服务读不到密钥。
+
+### 保存账号
+
+```bash
+sudo -u bupt -i                 # 切到服务用户；本地开发可省略
+cd /opt/bupt-insight/app
+python -X utf8 run.py credentials save
+```
+
+交互式输入账号与密码。输入不回显，不会写入 shell 历史、命令行参数或 `config.yaml`。
+成功后生成：
+
+```
+<secrets_dir>/master.key    # 主密钥，0600
+<secrets_dir>/byr.enc       # 加密后的账号密码
+```
+
+`secrets_dir` 默认为 `/var/lib/bupt-insight/secrets`。检查：
+
+```bash
+python -X utf8 run.py credentials status
+ls -l /var/lib/bupt-insight/secrets      # 目录 700、文件 600
+```
+
+### 登录 BYR
+
+`login byr` 会打开有头浏览器：已保存账号时自动填表；遇到验证码或二次验证时人工完成。
+登录后会加载 `Paper` 版面自检，确认能读到帖子才保存 `byr-state.enc`。
+
+按运行环境选择一种方式。
+
+**有桌面或 X11 转发**
+
+```bash
+DISPLAY=:0 python -X utf8 run.py login byr
+```
+
+**无头服务器（Xvfb + VNC）**
+
+```bash
+sudo apt install -y xvfb x11vnc openbox
+Xvfb :99 -screen 0 1440x900x24 &
+DISPLAY=:99 openbox &
+DISPLAY=:99 x11vnc -localhost -nopw -forever -shared &
+DISPLAY=:99 python -X utf8 run.py login byr
+```
+
+本地建立隧道后，用 VNC 客户端连接 `localhost:5900`：
+
+```bash
+ssh -L 5900:127.0.0.1:5900 ubuntu@<server>
+```
+
+**在本地登录后复制加密文件**
+
+加密不绑定机器。在本地完成 `credentials save` 与 `login byr` 后，把 `master.key`、
+`byr.enc`、`byr-state.enc` 复制到服务器的 `secrets_dir`：
+
+```bash
+scp secrets/{master.key,byr.enc,byr-state.enc} ubuntu@<server>:/tmp/bupt-secrets/
+sudo install -d -m 700 -o bupt -g bupt /var/lib/bupt-insight/secrets
+sudo install -m 600 -o bupt -g bupt /tmp/bupt-secrets/* /var/lib/bupt-insight/secrets/
+rm -rf /tmp/bupt-secrets
+```
+
+只迁移会话时，也可以导入 Playwright 的 `storage_state`：
 
 ```bash
 python -X utf8 run.py login byr --import-state ./state.json
-rm ./state.json   # 导入后请删除明文文件
+rm ./state.json        # 导入后删除明文
 ```
+
+### 验证
+
+```bash
+python -X utf8 run.py scan --baseline --boards Paper   # 小样本，不推送历史
+python -X utf8 run.py status                           # byr 应为 ok / no_new
+python -X utf8 run.py health
+```
+
+确认无误后启用服务：
+
+```bash
+sudo systemctl enable --now bupt-insight-scan.timer
+sudo systemctl enable --now bupt-insight-web.service
+```
+
+### 常见问题
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `secrets_missing_key` | 没有 `master.key`，也未设置 `BUPT_INSIGHT_MASTER_KEY` | 重新 `credentials save`，或注入环境变量 |
+| `secrets_permissions` | 目录或文件权限过宽 | `chmod 700 <secrets_dir>`、`chmod 600 <secrets_dir>/*` |
+| `interaction_required`「请在本地交互式终端」 | 没有 TTY | 使用 `ssh -t` 或 `sudo -u bupt -i` |
+| `scan` 返回 `login_expired` | 会话过期 | 重新执行 `login byr`，已采集数据不受影响 |
+| Chromium 报 `Executable doesn't exist` | 未安装浏览器 | `playwright install chromium`，或设置 `net.executable_path` |
+
 
 ## 凭据与加密
 
