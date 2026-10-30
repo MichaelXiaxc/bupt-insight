@@ -82,6 +82,13 @@ def create_app(config=None, port: int | None = None):
     def protect():
         # Host validation blocks DNS rebinding; no CORS, no remote assets.
         if request.host.lower() not in hosts:
+            # Log the rejected name (never the path) so a misconfigured domain is
+            # diagnosable from journalctl instead of being a bare 403.
+            log.warning(
+                "rejected Host header %r; allowed: %s",
+                request.host[:120],
+                ",".join(sorted(hosts)),
+            )
             abort(403)
         if request.headers.get("Sec-Fetch-Site") == "cross-site":
             abort(403)

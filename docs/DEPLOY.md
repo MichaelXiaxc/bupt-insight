@@ -126,6 +126,51 @@ journalctl -u bupt-insight-scan -n 100
 - 或 nginx `auth_basic` + fail2ban；
 - 或有 IdP 时用 oauth2-proxy。
 
+## 6.1 域名与 Host 白名单
+
+应用会校验请求的 `Host` 头（防 DNS rebinding），只接受 `site.allowed_hosts` 中的名字。
+**域名解析正确、但页面返回 `{"error":"forbidden"}` 时，就是这里没加域名。**
+
+1. 在域名商添加解析（阿里云：云解析 DNS → 记录）：
+
+   | 主机记录 | 类型 | 记录值 | 说明 |
+   |---|---|---|---|
+   | `@` | A | 服务器公网 IP | 裸域名 |
+   | `www` | A 或 CNAME | 同上 / 裸域名 | 可选 |
+
+   解析生效后 `dig +short 你的域名` 应返回该 IP。
+
+2. 修改 `config.yaml`：
+
+   ```yaml
+   site:
+     base_url: http://insight.example.com
+     allowed_hosts:
+       - insight.example.com
+       - www.insight.example.com
+       - 43.143.242.36          # 保留 IP 直连
+   ```
+
+3. 让 nginx 的 `server_name` 也包含域名（有 `default_server` 时非必需，但更清晰）：
+
+   ```nginx
+   server_name insight.example.com www.insight.example.com 43.143.242.36;
+   ```
+
+4. 重启并验证：
+
+   ```bash
+   sudo systemctl restart bupt-insight-web
+   sudo nginx -t && sudo systemctl reload nginx
+   curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: insight.example.com' http://127.0.0.1/
+   ```
+
+   返回 `200` 即配置正确；仍为 `403` 时执行
+   `journalctl -u bupt-insight-web -n 20`，日志会打印被拒绝的 Host 与允许列表。
+
+5. 上 HTTPS 时把 `base_url` 改为 `https://`、`cookie_secure: true`，
+   并按 `deploy/nginx.conf.example` 增加 443 监听与证书（certbot 需要域名已解析到本机）。
+
 ## 7. 备份
 
 应用每次 `scan` 会按 `backup.interval_hours` 做在线快照。异地备份二选一：
