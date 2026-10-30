@@ -230,7 +230,6 @@ def login(cfg, start_url=None, wait_seconds: int = 300) -> bool:
             print("请在浏览器窗口中完成 BYR 登录。")
 
         print(f"最多等待 {wait_seconds} 秒；登录标记与凭据不会输出到日志。")
-        before = byr_probe(page)
         deadline = time.time() + wait_seconds
         while time.time() < deadline:
             time.sleep(3)
@@ -238,7 +237,9 @@ def login(cfg, start_url=None, wait_seconds: int = 300) -> bool:
                 current = byr_probe(page)
             except Exception:
                 continue
-            if current and current != before or (current and not before):
+            # A real nforum user cookie is definitive; the login may already have
+            # completed before the first poll, so do not wait for a state change.
+            if current:
                 try:
                     verified = byr_verify(page)
                 except Exception:
